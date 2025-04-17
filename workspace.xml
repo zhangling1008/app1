@@ -27,6 +27,7 @@
   </component>
   <component name="PropertiesComponent"><![CDATA[{
   "keyToString": {
+    "Python.app_streamlit.executor": "Run",
     "Python.init_db.executor": "Run",
     "RunOnceActivity.ShowReadmeOnStart": "true",
     "settings.editor.selected.configurable": "com.jetbrains.python.configuration.PyActiveSdkModuleConfigurable"

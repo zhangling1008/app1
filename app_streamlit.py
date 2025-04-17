@@ -4,6 +4,8 @@ import pyqrcode
 from io import BytesIO
 import base64
 from config import DB_CONFIG
+import urllib.parse
+import time
 
 # 页面配置
 st.set_page_config(
@@ -14,29 +16,33 @@ st.set_page_config(
 )
 
 
-# 自定义CSS样式
 def local_css(file_name):
-    with open(file_name) as f:
+    with open(file_name, "r", encoding="utf-8") as f:
         st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
 
 
 local_css("assets/style.css")
 
 
-# 数据库连接
 def get_db_connection():
     return pymysql.connect(**DB_CONFIG)
 
 
-# 保存问卷数据
 def save_to_database(data):
     try:
+        # 确保所有问题字段都存在
+        for q in range(6, 97):
+            if f"q{q}" not in data:
+                data[f"q{q}"] = 1  # 设置默认值
+
         connection = get_db_connection()
         with connection.cursor() as cursor:
             columns = ', '.join([f'`{k}`' for k in data.keys()])
             placeholders = ', '.join(['%s'] * len(data))
             sql = f"INSERT INTO survey ({columns}) VALUES ({placeholders})"
             cursor.execute(sql, tuple(data.values()))
+            st.write(f"DEBUG - 执行的SQL: {sql}")  # 调试输出
+            st.write(f"DEBUG - 插入的值: {tuple(data.values())}")
         connection.commit()
         return True
     except Exception as e:
@@ -47,7 +53,6 @@ def save_to_database(data):
             connection.close()
 
 
-# 生成二维码
 def generate_qrcode(url):
     qr = pyqrcode.create(url)
     buffer = BytesIO()
@@ -55,24 +60,31 @@ def generate_qrcode(url):
     return base64.b64encode(buffer.getvalue()).decode()
 
 
-# 问卷页面
+def get_current_url():
+    try:
+        ctx = st.runtime.scriptrunner.get_script_run_ctx()
+        if ctx:
+            return f"http://{ctx.host}:{ctx.port}{ctx.script_route}"
+    except:
+        pass
+    return "http://localhost:8501"  # 本地开发默认
+
+
 def show_questionnaire():
     st.title("🧠 心理调查问卷")
     st.markdown("感谢您参与本次心理调查！您的回答将帮助我们更好地了解您的心理状态和需求，本问卷所有数据将严格保密。")
 
     with st.form("survey_form", clear_on_submit=True):
-        # 基本信息
         col1, col2 = st.columns(2)
         with col1:
             name = st.text_input("姓名", key="name", max_chars=50)
             age = st.number_input("年龄", min_value=0, max_value=120, key="age")
         with col2:
             gender = st.selectbox("性别", ["男", "女", "其他"], key="gender")
-            student_id = st.text_input("学号", key="student_id")
+            student_id = st.text_input("学号", key="student_id").strip()  # 去除空格
 
         class_ = st.text_input("班级", key="class_")
 
-        # 问题列表
         questions = [
             "头痛",
             "神经过敏，心中不踏实",
@@ -170,25 +182,18 @@ def show_questionnaire():
         answers = {}
         for i, question in enumerate(questions, 6):
             st.subheader(f"问题{i}: {question}")
-            if i == 41:  # 特殊问题
-                ans = st.radio(
-                    f"Q{i}",
-                    options=["从不", "很少", "有时", "经常", "总是"],
-                    index=2,  # 默认选中"有时"
-                    horizontal=True,
-                    key=f"q{i}"
-                )
+            if i == 41:
+                ans = st.radio(f"Q{i}", options=["从不", "很少", "有时", "经常", "总是"], index=2, horizontal=True,
+                               key=f"q{i}")
             else:
-                ans = st.radio(
-                    f"Q{i}",
-                    options=["从不", "很少", "有时", "经常", "总是"],
-                    horizontal=True,
-                    key=f"q{i}"
-                )
+                ans = st.radio(f"Q{i}", options=["从不", "很少", "有时", "经常", "总是"], horizontal=True, key=f"q{i}")
             answers[f"q{i}"] = ["从不", "很少", "有时", "经常", "总是"].index(ans) + 1
 
         if st.form_submit_button("提交问卷"):
-            # 准备数据
+            if not student_id:
+                st.error("学号不能为空！")
+                return
+
             form_data = {
                 "name": name,
                 "age": age,
@@ -199,84 +204,179 @@ def show_questionnaire():
             }
 
             if save_to_database(form_data):
-                # 生成反馈链接
-                feedback_url = f"{st.experimental_get_this_url()}?feedback_id={student_id}"
-                qr_img = generate_qrcode(feedback_url)
+                # 生成带时间戳的反馈链接避免缓存问题
+                timestamp = int(time.time())
+                base_url = get_current_url()
+                feedback_url = f"{base_url}?feedback_id={student_id}&t={timestamp}"
 
-                # 显示成功信息
                 st.success("问卷提交成功！")
                 st.balloons()
 
-                # 显示二维码
-                st.subheader("扫描二维码查看个性化反馈")
-                st.markdown(
-                    f'<img src="data:image/png;base64,{qr_img}" width="200">',
-                    unsafe_allow_html=True
-                )
+                # 显示调试信息
+                st.write("### 调试信息")
+                st.write(f"生成的反馈链接: `{feedback_url}`")
 
-                # 直接链接
+                # 生成二维码
+                qr_img = generate_qrcode(feedback_url)
+                st.subheader("扫描二维码查看个性化反馈")
+                st.markdown(f'<img src="data:image/png;base64,{qr_img}" width="200">', unsafe_allow_html=True)
                 st.markdown(f"[点击查看反馈]({feedback_url})")
 
 
-# 反馈页面
-def show_feedback(feedback_id):
-    st.title("📊 您的个性化心理建议")
+# ... (前面的import和配置保持不变)
 
-    # 从数据库获取数据
+def save_to_database(data):
     try:
+        # 确保所有问题字段都存在
+        for q in range(6, 97):
+            if f"q{q}" not in data:
+                data[f"q{q}"] = 1  # 设置默认值
+
         connection = get_db_connection()
         with connection.cursor() as cursor:
-            cursor.execute("SELECT * FROM survey WHERE student_id = %s", (feedback_id,))
-            result = cursor.fetchone()
-
-        if result:
-            # 显示基本信息
-            st.write(f"**姓名**: {result['name']}")
-            st.write(f"**年龄**: {result['age']}")
-            st.write(f"**性别**: {result['gender']}")
-
-            # 分析结果
-            st.subheader("分析结果")
-
-            # 示例分析逻辑（实际应根据专业规则）
-            total_score = sum([v for k, v in result.items() if k.startswith('q') and k != 'q41'])
-            avg_score = total_score / 95
-
-            if avg_score < 2:
-                st.success("您的心理健康状况良好")
-            elif avg_score < 3.5:
-                st.warning("您存在轻度心理困扰")
-            else:
-                st.error("您可能存在显著心理困扰，建议寻求专业帮助")
-
-            # 详细建议
-            st.subheader("专业建议")
-            st.markdown("""
-            - 每天保持7-8小时规律睡眠
-            - 每周进行3次以上有氧运动
-            - 练习正念冥想缓解压力
-            - 如有需要可联系学校心理咨询中心
-            """)
-
-        else:
-            st.warning("未找到您的问卷记录")
-
+            columns = ', '.join([f'`{k}`' for k in data.keys()])
+            placeholders = ', '.join(['%s'] * len(data))
+            sql = f"INSERT INTO survey ({columns}) VALUES ({placeholders})"
+            cursor.execute(sql, tuple(data.values()))
+        connection.commit()
+        return True
     except Exception as e:
         st.error(f"数据库错误: {str(e)}")
+        return False
     finally:
         if 'connection' in locals() and connection:
             connection.close()
 
 
-# 主程序
+def show_feedback(feedback_id):
+    st.title("📊 您的个性化心理建议")
+    st.write(f"正在查询学号: `{feedback_id}`")
+
+    try:
+        connection = get_db_connection()
+        with connection.cursor(pymysql.cursors.DictCursor) as cursor:
+            # 修改为使用字符串查询，确保类型匹配
+            sql = "SELECT * FROM survey WHERE student_id = %s"
+            cursor.execute(sql, (str(feedback_id),))  # 确保转换为字符串
+
+            result = cursor.fetchone()
+
+            if result:
+
+                # 显示基本信息
+                with st.container():
+                    st.subheader("基本信息")
+                    cols = st.columns(3)
+                    with cols[0]:
+                        st.metric("姓名", result.get('name', '未知'))
+                    with cols[1]:
+                        st.metric("年龄", result.get('age', '未知'))
+                    with cols[2]:
+                        st.metric("性别", result.get('gender', '未知'))
+
+                # 计算分数
+                st.subheader("评估结果")
+                scores = [v for k, v in result.items() if k.startswith('q') and k != 'q41']
+                total_score = sum(scores)
+                avg_score = total_score / len(scores) if scores else 0
+
+                # 创建评分卡
+                score_card = st.container()
+                with score_card:
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.metric("总分", f"{total_score}/380")
+                        st.metric("平均分", f"{avg_score:.2f}/4")
+
+                    with col2:
+                        # 可视化进度条
+                        st.progress(min(avg_score / 4, 1.0))
+                        if avg_score < 2:
+                            st.success("您的心理健康状况良好")
+                        elif avg_score < 3.5:
+                            st.warning("您存在轻度心理困扰")
+                        else:
+                            st.error("您可能存在显著心理困扰")
+
+                # 详细建议
+                st.subheader("专业建议")
+                if avg_score < 2:
+                    st.markdown("""
+                    - 😊 您的心理状态非常健康
+                    - 继续保持良好的生活习惯
+                    - 定期进行自我心理评估
+                    """)
+                elif avg_score < 3.5:
+                    st.markdown("""
+                    - 🧘 建议尝试以下缓解方法:
+                      - 每天10分钟正念冥想
+                      - 每周3次30分钟有氧运动
+                      - 保持规律作息
+                      - 与朋友家人多交流
+                    - 可预约学校心理咨询室进行专业评估
+                    """)
+                else:
+                    st.markdown("""
+                    - ❤️ 我们建议您:
+                      - 立即联系学校心理咨询中心
+                      - 拨打心理援助热线: 12320
+                      - 避免独自承受压力
+                      - 保持规律生活作息
+                    - 专业帮助能有效改善您的状况
+                    """)
+
+                # 显示提交时间（如果表中有时间字段）
+                if 'create_time' in result:
+                    st.caption(f"问卷提交时间: {result['create_time']}")
+
+            else:
+                st.warning("未找到您的问卷记录")
+                st.markdown("""
+                **可能原因及解决方案:**
+                1. 学号输入错误 → 请检查学号是否正确
+                2. 问卷未成功提交 → 请重新填写提交
+                3. 数据库延迟 → 请稍后刷新页面
+                """)
+
+                # 提供返回问卷的链接
+                if st.button("返回填写问卷"):
+                    st.query_params.clear()
+                    st.rerun()
+
+    except Exception as e:
+        st.error(f"查询出错: {str(e)}")
+    finally:
+        if 'connection' in locals() and connection:
+            connection.close()
+
+
 def main():
-    # 检查URL参数
-    query_params = st.experimental_get_query_params()
-    if 'feedback_id' in query_params:
-        show_feedback(query_params['feedback_id'][0])
+    params = st.query_params
+    if 'feedback_id' in params:
+        feedback_id = params['feedback_id']
+        # 处理可能的列表情况（确保是字符串）
+        if isinstance(feedback_id, list):
+            feedback_id = feedback_id[0].strip()
+        else:
+            feedback_id = feedback_id.strip()
+        show_feedback(feedback_id)
     else:
         show_questionnaire()
 
 
+import os
+
+
+def local_css(file_name):
+    # 获取当前脚本所在目录的绝对路径
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    css_path = os.path.join(current_dir, file_name)
+
+    try:
+        with open(css_path, "r", encoding="utf-8") as f:
+            st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
+    except FileNotFoundError:
+        st.error(f"CSS文件未找到: {css_path}")
+# ... (后面的代码保持不变)
 if __name__ == "__main__":
     main()
